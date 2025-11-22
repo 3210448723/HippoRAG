@@ -1,42 +1,64 @@
-import json
-import os
-import logging
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
-from typing import Union, Optional, List, Set, Dict, Any, Tuple, Literal
-import numpy as np
-import importlib
-from collections import defaultdict
-from transformers import HfArgumentParser
-from concurrent.futures import ThreadPoolExecutor
-from tqdm import tqdm
-from igraph import Graph
-import igraph as ig
-import numpy as np
-from collections import defaultdict
-import re
-import time
+# 标准库导入 / Standard library imports
+import json  # JSON 数据处理 / JSON data processing
+import os  # 操作系统接口 / Operating system interface
+import logging  # 日志记录 / Logging
+from dataclasses import dataclass, field, asdict  # 数据类支持 / Dataclass support
+from datetime import datetime  # 日期时间处理 / Datetime handling
+from typing import Union, Optional, List, Set, Dict, Any, Tuple, Literal  # 类型提示 / Type hints
+import numpy as np  # 数值计算 / Numerical computing
+import importlib  # 动态导入模块 / Dynamic module imports
+from collections import defaultdict  # 默认字典 / Default dictionary
+from transformers import HfArgumentParser  # Hugging Face 参数解析器 / Hugging Face argument parser
+from concurrent.futures import ThreadPoolExecutor  # 线程池执行器 / Thread pool executor
+from tqdm import tqdm  # 进度条显示 / Progress bar display
+from igraph import Graph  # 图数据结构 / Graph data structure
+import igraph as ig  # 图算法库 / Graph algorithms library
+import numpy as np  # 数值计算（重复导入）/ Numerical computing (duplicate import)
+from collections import defaultdict  # 默认字典（重复导入）/ Default dictionary (duplicate import)
+import re  # 正则表达式 / Regular expressions
+import time  # 时间处理 / Time handling
 
+# 内部模块导入 / Internal module imports
+# LLM（大语言模型）相关模块 / LLM (Large Language Model) related modules
 from .llm import _get_llm_class, BaseLLM
+# 嵌入模型相关模块 / Embedding model related modules
 from .embedding_model import _get_embedding_model_class, BaseEmbeddingModel
+# 嵌入向量存储 / Embedding vector storage
 from .embedding_store import EmbeddingStore
+# 信息提取（OpenIE）模块 / Information Extraction (OpenIE) modules
 from .information_extraction import OpenIE
 from .information_extraction.openie_vllm_offline import VLLMOfflineOpenIE
 from .information_extraction.openie_transformers_offline import TransformersOfflineOpenIE
+# 评估模块 / Evaluation modules
 from .evaluation.retrieval_eval import RetrievalRecall
 from .evaluation.qa_eval import QAExactMatch, QAF1Score
+# 提示词相关模块 / Prompt related modules
 from .prompts.linking import get_query_instruction
 from .prompts.prompt_template_manager import PromptTemplateManager
+# 重排序模块 / Re-ranking module
 from .rerank import DSPyFilter
+# 工具函数 / Utility functions
 from .utils.misc_utils import *
 from .utils.misc_utils import NerRawOutput, TripleRawOutput
 from .utils.embed_utils import retrieve_knn
 from .utils.typing import Triple
 from .utils.config_utils import BaseConfig
 
+# 获取日志记录器 / Get logger
 logger = logging.getLogger(__name__)
 
 class HippoRAG:
+    """
+    HippoRAG 主类：实现受神经生物学启发的长期记忆检索增强生成系统
+    HippoRAG Main Class: Implements neurobiologically inspired long-term memory 
+    for retrieval-augmented generation
+    
+    该类模拟人类海马体的记忆机制，通过构建知识图谱和多层嵌入表示，
+    实现高效的文档索引、检索和问答功能。
+    This class simulates human hippocampus memory mechanisms, implementing efficient 
+    document indexing, retrieval and QA through knowledge graph construction and 
+    multi-level embedding representations.
+    """
 
     def __init__(self,
                  global_config=None,
@@ -48,47 +70,62 @@ class HippoRAG:
                  azure_endpoint=None,
                  azure_embedding_endpoint=None):
         """
-        Initializes an instance of the class and its related components.
+        初始化 HippoRAG 实例及其相关组件
+        Initializes an instance of the HippoRAG class and its related components.
 
-        Attributes:
-            global_config (BaseConfig): The global configuration settings for the instance. An instance
-                of BaseConfig is used if no value is provided.
-            saving_dir (str): The directory where specific HippoRAG instances will be stored. This defaults
-                to `outputs` if no value is provided.
-            llm_model (BaseLLM): The language model used for processing based on the global
-                configuration settings.
-            openie (Union[OpenIE, VLLMOfflineOpenIE]): The Open Information Extraction module
-                configured in either online or offline mode based on the global settings.
-            graph: The graph instance initialized by the `initialize_graph` method.
-            embedding_model (BaseEmbeddingModel): The embedding model associated with the current
-                configuration.
-            chunk_embedding_store (EmbeddingStore): The embedding store handling chunk embeddings.
-            entity_embedding_store (EmbeddingStore): The embedding store handling entity embeddings.
-            fact_embedding_store (EmbeddingStore): The embedding store handling fact embeddings.
-            prompt_template_manager (PromptTemplateManager): The manager for handling prompt templates
-                and roles mappings.
-            openie_results_path (str): The file path for storing Open Information Extraction results
-                based on the dataset and LLM name in the global configuration.
-            rerank_filter (Optional[DSPyFilter]): The filter responsible for reranking information
-                when a rerank file path is specified in the global configuration.
-            ready_to_retrieve (bool): A flag indicating whether the system is ready for retrieval
-                operations.
+        属性说明 / Attributes:
+            global_config (BaseConfig): 全局配置设置。如果未提供，将使用默认的 BaseConfig 实例。
+                                       Global configuration settings. Uses default BaseConfig if not provided.
+            saving_dir (str): HippoRAG 实例的保存目录。默认为 `outputs`。
+                             Directory for storing HippoRAG instances. Defaults to `outputs`.
+            llm_model (BaseLLM): 基于全局配置的大语言模型，用于处理文本生成任务。
+                                Language model for text generation based on global configuration.
+            openie (Union[OpenIE, VLLMOfflineOpenIE]): 开放信息提取模块，根据配置可以是在线或离线模式。
+                                                      Open Information Extraction module in online or offline mode.
+            graph: 由 `initialize_graph` 方法初始化的知识图谱实例。
+                  Knowledge graph instance initialized by `initialize_graph` method.
+            embedding_model (BaseEmbeddingModel): 与当前配置关联的嵌入模型。
+                                                 Embedding model for current configuration.
+            chunk_embedding_store (EmbeddingStore): 处理文档块嵌入的存储器。
+                                                   Embedding store for document chunks.
+            entity_embedding_store (EmbeddingStore): 处理实体嵌入的存储器。
+                                                    Embedding store for entities.
+            fact_embedding_store (EmbeddingStore): 处理事实三元组嵌入的存储器。
+                                                  Embedding store for fact triples.
+            prompt_template_manager (PromptTemplateManager): 管理提示词模板和角色映射。
+                                                            Manager for prompt templates and role mappings.
+            openie_results_path (str): 存储开放信息提取结果的文件路径。
+                                      File path for storing OpenIE results.
+            rerank_filter (Optional[DSPyFilter]): 重排序过滤器，用于对检索结果进行重新排序。
+                                                 Re-ranking filter for retrieved results.
+            ready_to_retrieve (bool): 标志位，指示系统是否已准备好执行检索操作。
+                                     Flag indicating if system is ready for retrieval.
 
-        Parameters:
-            global_config: The global configuration object. Defaults to None, leading to initialization
-                of a new BaseConfig object.
-            working_dir: The directory for storing working files. Defaults to None, constructing a default
-                directory based on the class name and timestamp.
-            llm_model_name: LLM model name, can be inserted directly as well as through configuration file.
-            embedding_model_name: Embedding model name, can be inserted directly as well as through configuration file.
-            llm_base_url: LLM URL for a deployed LLM model, can be inserted directly as well as through configuration file.
+        参数说明 / Parameters:
+            global_config: 全局配置对象。默认为 None，将初始化新的 BaseConfig 对象。
+                          Global configuration object. Defaults to None (creates new BaseConfig).
+            save_dir: 工作文件的保存目录。默认为 None，将基于类名和时间戳构建默认目录。
+                     Directory for working files. Defaults to None (auto-generated).
+            llm_model_name: LLM 模型名称，可直接指定或通过配置文件设置。
+                           LLM model name, can be set directly or via config file.
+            llm_base_url: 部署的 LLM 模型的 URL，可直接指定或通过配置文件设置。
+                         URL for deployed LLM model, can be set directly or via config file.
+            embedding_model_name: 嵌入模型名称，可直接指定或通过配置文件设置。
+                                 Embedding model name, can be set directly or via config file.
+            embedding_base_url: 嵌入模型的 URL，可直接指定或通过配置文件设置。
+                               URL for embedding model, can be set directly or via config file.
+            azure_endpoint: Azure 端点 URL（用于 Azure OpenAI 服务）。
+                           Azure endpoint URL (for Azure OpenAI service).
+            azure_embedding_endpoint: Azure 嵌入模型端点 URL。
+                                     Azure embedding model endpoint URL.
         """
+        # 初始化或使用提供的全局配置 / Initialize or use provided global configuration
         if global_config is None:
             self.global_config = BaseConfig()
         else:
             self.global_config = global_config
 
-        #Overwriting Configuration if Specified
+        # 如果指定了参数，则覆盖配置 / Overwrite configuration if specified
         if save_dir is not None:
             self.global_config.save_dir = save_dir
 
@@ -110,195 +147,285 @@ class HippoRAG:
         if azure_embedding_endpoint is not None:
             self.global_config.azure_embedding_endpoint = azure_embedding_endpoint
 
+        # 打印配置信息用于调试 / Print configuration for debugging
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in asdict(self.global_config).items()])
         logger.debug(f"HippoRAG init with config:\n  {_print_config}\n")
 
-        #LLM and embedding model specific working directories are created under every specified saving directories
+        # 为每个 LLM 和嵌入模型组合创建特定的工作目录 / Create specific working directories for each LLM and embedding model combination
         llm_label = self.global_config.llm_name.replace("/", "_")
         embedding_label = self.global_config.embedding_model_name.replace("/", "_")
         self.working_dir = os.path.join(self.global_config.save_dir, f"{llm_label}_{embedding_label}")
 
+        # 如果工作目录不存在，则创建它 / Create working directory if it doesn't exist
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory: {self.working_dir}")
             os.makedirs(self.working_dir, exist_ok=True)
 
+        # 初始化大语言模型 / Initialize Large Language Model
         self.llm_model: BaseLLM = _get_llm_class(self.global_config)
 
+        # 根据配置初始化信息提取模块（在线或离线模式）/ Initialize OpenIE module based on configuration (online or offline mode)
         if self.global_config.openie_mode == 'online':
+            # 在线模式：使用 LLM 实时进行信息提取 / Online mode: Use LLM for real-time information extraction
             self.openie = OpenIE(llm_model=self.llm_model)
         elif self.global_config.openie_mode == 'offline':
+            # 离线模式（VLLM）：使用预先部署的 VLLM 服务 / Offline mode (VLLM): Use pre-deployed VLLM service
             self.openie = VLLMOfflineOpenIE(self.global_config)
         elif self.global_config.openie_mode ==  'Transformers-offline':
+            # 离线模式（Transformers）：使用本地 Transformers 模型 / Offline mode (Transformers): Use local Transformers model
             self.openie = TransformersOfflineOpenIE(self.global_config)
 
+        # 初始化知识图谱 / Initialize knowledge graph
         self.graph = self.initialize_graph()
 
+        # 根据 OpenIE 模式初始化嵌入模型 / Initialize embedding model based on OpenIE mode
         if self.global_config.openie_mode == 'offline':
+            # 离线模式下不需要嵌入模型 / No embedding model needed in offline mode
             self.embedding_model = None
         else:
+            # 在线模式下初始化嵌入模型 / Initialize embedding model in online mode
             self.embedding_model: BaseEmbeddingModel = _get_embedding_model_class(
                 embedding_model_name=self.global_config.embedding_model_name)(global_config=self.global_config,
                                                                               embedding_model_name=self.global_config.embedding_model_name)
+        # 初始化三个嵌入向量存储器 / Initialize three embedding stores
+        # 1. 文档块嵌入存储器 / Document chunk embedding store
         self.chunk_embedding_store = EmbeddingStore(self.embedding_model,
                                                     os.path.join(self.working_dir, "chunk_embeddings"),
                                                     self.global_config.embedding_batch_size, 'chunk')
+        # 2. 实体嵌入存储器 / Entity embedding store
         self.entity_embedding_store = EmbeddingStore(self.embedding_model,
                                                      os.path.join(self.working_dir, "entity_embeddings"),
                                                      self.global_config.embedding_batch_size, 'entity')
+        # 3. 事实（三元组）嵌入存储器 / Fact (triple) embedding store
         self.fact_embedding_store = EmbeddingStore(self.embedding_model,
                                                    os.path.join(self.working_dir, "fact_embeddings"),
                                                    self.global_config.embedding_batch_size, 'fact')
 
+        # 初始化提示词模板管理器 / Initialize prompt template manager
         self.prompt_template_manager = PromptTemplateManager(role_mapping={"system": "system", "user": "user", "assistant": "assistant"})
 
+        # 设置 OpenIE 结果的保存路径 / Set save path for OpenIE results
         self.openie_results_path = os.path.join(self.global_config.save_dir,f'openie_results_ner_{self.global_config.llm_name.replace("/", "_")}.json')
 
+        # 初始化重排序过滤器 / Initialize re-ranking filter
         self.rerank_filter = DSPyFilter(self)
 
+        # 检索准备标志 / Retrieval readiness flag
         self.ready_to_retrieve = False
 
-        self.ppr_time = 0
-        self.rerank_time = 0
-        self.all_retrieval_time = 0
+        # 性能统计变量 / Performance statistics variables
+        self.ppr_time = 0  # 个性化 PageRank 时间 / Personalized PageRank time
+        self.rerank_time = 0  # 重排序时间 / Re-ranking time
+        self.all_retrieval_time = 0  # 总检索时间 / Total retrieval time
 
+        # 实体节点到文档块 ID 的映射 / Mapping from entity nodes to chunk IDs
         self.ent_node_to_chunk_ids = None
 
 
     def initialize_graph(self):
         """
-        Initializes a graph using a Pickle file if available or creates a new graph.
+        初始化知识图谱：从 Pickle 文件加载或创建新图谱
+        Initializes knowledge graph: Load from Pickle file or create new graph
 
-        The function attempts to load a pre-existing graph stored in a Pickle file. If the file
-        is not present or the graph needs to be created from scratch, it initializes a new directed
-        or undirected graph based on the global configuration. If the graph is loaded successfully
-        from the file, pertinent information about the graph (number of nodes and edges) is logged.
+        该函数尝试从 Pickle 文件加载预先存在的图谱。如果文件不存在或需要从头创建，
+        则根据全局配置初始化一个新的有向图或无向图。如果成功从文件加载图谱，
+        会记录图谱的相关信息（节点数和边数）。
+        This function attempts to load a pre-existing graph from a Pickle file. If the file
+        doesn't exist or needs to be created from scratch, it initializes a new directed
+        or undirected graph based on global configuration. Logs graph info (nodes and edges)
+        if successfully loaded.
 
-        Returns:
-            ig.Graph: A pre-loaded or newly initialized graph.
+        返回值 / Returns:
+            ig.Graph: 预加载的图谱或新初始化的图谱
+                     Pre-loaded or newly initialized graph
 
-        Raises:
+        异常 / Raises:
             None
         """
+        # 构建图谱 Pickle 文件的路径 / Build path for graph pickle file
         self._graph_pickle_filename = os.path.join(
             self.working_dir, f"graph.pickle"
         )
 
         preloaded_graph = None
 
+        # 如果不是强制从头开始索引，尝试加载已有图谱 / Try to load existing graph if not forcing fresh indexing
         if not self.global_config.force_index_from_scratch:
             if os.path.exists(self._graph_pickle_filename):
                 preloaded_graph = ig.Graph.Read_Pickle(self._graph_pickle_filename)
 
+        # 根据是否成功加载，返回相应的图谱 / Return appropriate graph based on loading success
         if preloaded_graph is None:
+            # 创建新的空图谱（根据配置决定是否为有向图）/ Create new empty graph (directed or undirected based on config)
             return ig.Graph(directed=self.global_config.is_directed_graph)
         else:
+            # 记录加载的图谱信息 / Log loaded graph information
             logger.info(
                 f"Loaded graph from {self._graph_pickle_filename} with {preloaded_graph.vcount()} nodes, {preloaded_graph.ecount()} edges"
             )
             return preloaded_graph
 
     def pre_openie(self,  docs: List[str]):
+        """
+        预处理离线 OpenIE：批量提取文档的实体和关系
+        Pre-process offline OpenIE: Batch extract entities and relations from documents
+        
+        该方法用于离线模式下的信息提取预处理。它识别尚未处理的文档块，
+        执行批量 OpenIE 操作，并保存结果。完成后会抛出断言错误以提示
+        用户切换到在线索引模式。
+        This method is for information extraction pre-processing in offline mode. It identifies
+        unprocessed document chunks, performs batch OpenIE, and saves results. Throws assertion
+        error after completion to prompt user to switch to online indexing.
+        
+        参数 / Parameters:
+            docs: List[str] - 待处理的文档列表 / List of documents to process
+        """
         logger.info(f"Indexing Documents")
         logger.info(f"Performing OpenIE Offline")
 
+        # 获取尚未处理的文档块的哈希 ID / Get hash IDs of unprocessed document chunks
         chunks = self.chunk_embedding_store.get_missing_string_hash_ids(docs)
 
+        # 加载已有的 OpenIE 结果并确定需要处理的块 / Load existing OpenIE results and determine chunks to process
         all_openie_info, chunk_keys_to_process = self.load_existing_openie(chunks.keys())
         new_openie_rows = {k : chunks[k] for k in chunk_keys_to_process}
 
+        # 如果有新的文档块需要处理 / If there are new chunks to process
         if len(chunk_keys_to_process) > 0:
+            # 执行批量 OpenIE：命名实体识别和三元组提取 / Perform batch OpenIE: NER and triple extraction
             new_ner_results_dict, new_triple_results_dict = self.openie.batch_openie(new_openie_rows)
+            # 合并新的 OpenIE 结果 / Merge new OpenIE results
             self.merge_openie_results(all_openie_info, new_openie_rows, new_ner_results_dict, new_triple_results_dict)
 
+        # 如果配置要求保存 OpenIE 结果 / If configuration requires saving OpenIE results
         if self.global_config.save_openie:
             self.save_openie_results(all_openie_info)
 
+        # 完成离线 OpenIE，提示用户运行在线索引 / Complete offline OpenIE, prompt user to run online indexing
         assert False, logger.info('Done with OpenIE, run online indexing for future retrieval.')
 
     def index(self, docs: List[str]):
         """
-        Indexes the given documents based on the HippoRAG 2 framework which generates an OpenIE knowledge graph
-        based on the given documents and encodes passages, entities and facts separately for later retrieval.
+        索引文档：基于 HippoRAG 2 框架构建知识图谱和嵌入表示
+        Index documents: Build knowledge graph and embedding representations based on HippoRAG 2 framework
+        
+        该方法实现了 HippoRAG 2 框架的核心索引功能。它通过 OpenIE 从文档中提取
+        实体和关系，构建知识图谱，并分别对文档段落、实体和事实进行编码，
+        以便后续的高效检索。
+        This method implements the core indexing functionality of HippoRAG 2 framework. It extracts
+        entities and relations from documents via OpenIE, builds a knowledge graph, and encodes
+        passages, entities, and facts separately for efficient later retrieval.
 
-        Parameters:
+        参数 / Parameters:
             docs : List[str]
-                A list of documents to be indexed.
+                待索引的文档列表 / List of documents to be indexed
         """
 
-        logger.info(f"Indexing Documents")
+        logger.info(f"Indexing Documents")  # 记录：开始索引文档 / Log: Starting document indexing
 
-        logger.info(f"Performing OpenIE")
+        logger.info(f"Performing OpenIE")  # 记录：执行开放信息提取 / Log: Performing Open Information Extraction
 
+        # 如果是离线模式，调用预处理方法 / If offline mode, call pre-processing method
         if self.global_config.openie_mode == 'offline':
             self.pre_openie(docs)
 
+        # 将文档插入到块嵌入存储器中 / Insert documents into chunk embedding store
         self.chunk_embedding_store.insert_strings(docs)
+        # 获取所有文档块 ID 到行数据的映射 / Get mapping from all chunk IDs to row data
         chunk_to_rows = self.chunk_embedding_store.get_all_id_to_rows()
 
+        # 加载已有的 OpenIE 结果并识别需要处理的新块 / Load existing OpenIE results and identify new chunks to process
         all_openie_info, chunk_keys_to_process = self.load_existing_openie(chunk_to_rows.keys())
         new_openie_rows = {k : chunk_to_rows[k] for k in chunk_keys_to_process}
 
+        # 如果有新的文档块需要处理 / If there are new chunks to process
         if len(chunk_keys_to_process) > 0:
+            # 执行批量 OpenIE：命名实体识别和三元组提取 / Perform batch OpenIE: NER and triple extraction
             new_ner_results_dict, new_triple_results_dict = self.openie.batch_openie(new_openie_rows)
+            # 合并新旧 OpenIE 结果 / Merge new and existing OpenIE results
             self.merge_openie_results(all_openie_info, new_openie_rows, new_ner_results_dict, new_triple_results_dict)
 
+        # 如果配置要求保存 OpenIE 结果 / If configuration requires saving OpenIE results
         if self.global_config.save_openie:
             self.save_openie_results(all_openie_info)
 
+        # 重新格式化 OpenIE 结果为标准格式 / Reformat OpenIE results to standard format
         ner_results_dict, triple_results_dict = reformat_openie_results(all_openie_info)
 
+        # 断言确保所有数据的数量一致 / Assert to ensure all data counts are consistent
         assert len(chunk_to_rows) == len(ner_results_dict) == len(triple_results_dict), f"len(chunk_to_rows): {len(chunk_to_rows)}, len(ner_results_dict): {len(ner_results_dict)}, len(triple_results_dict): {len(triple_results_dict)}"
 
-        # prepare data_store
+        # 准备数据存储 / Prepare data storage
         chunk_ids = list(chunk_to_rows.keys())
 
+        # 处理每个块的三元组 / Process triples for each chunk
         chunk_triples = [[text_processing(t) for t in triple_results_dict[chunk_id].triples] for chunk_id in chunk_ids]
+        # 提取实体节点和块-三元组-实体的关系 / Extract entity nodes and chunk-triple-entity relationships
         entity_nodes, chunk_triple_entities = extract_entity_nodes(chunk_triples)
+        # 展平所有事实三元组 / Flatten all fact triples
         facts = flatten_facts(chunk_triples)
 
+        # 对实体进行编码 / Encode entities
         logger.info(f"Encoding Entities")
         self.entity_embedding_store.insert_strings(entity_nodes)
 
+        # 对事实进行编码 / Encode facts
         logger.info(f"Encoding Facts")
         self.fact_embedding_store.insert_strings([str(fact) for fact in facts])
 
+        # 构建知识图谱 / Construct knowledge graph
         logger.info(f"Constructing Graph")
 
+        # 初始化节点统计信息 / Initialize node statistics
         self.node_to_node_stats = {}
         self.ent_node_to_chunk_ids = {}
 
+        # 添加事实边（实体-关系-实体）/ Add fact edges (entity-relation-entity)
         self.add_fact_edges(chunk_ids, chunk_triples)
+        # 添加段落边（实体-文档块）/ Add passage edges (entity-chunk)
         num_new_chunks = self.add_passage_edges(chunk_ids, chunk_triple_entities)
 
+        # 如果有新的文档块被添加 / If new chunks were added
         if num_new_chunks > 0:
             logger.info(f"Found {num_new_chunks} new chunks to save into graph.")
+            # 添加同义词边 / Add synonymy edges
             self.add_synonymy_edges()
 
+            # 增强图谱（可能包括添加额外的连接）/ Augment graph (may include adding additional connections)
             self.augment_graph()
+            # 保存图谱 / Save graph
             self.save_igraph()
 
     def delete(self, docs_to_delete: List[str]):
         """
-        Deletes the given documents from all data structures within the HippoRAG class.
-        Note that triples and entities which are indexed from chunks that are not being removed will not be removed.
+        从 HippoRAG 的所有数据结构中删除指定文档
+        Deletes specified documents from all data structures within the HippoRAG class
+        
+        该方法从索引中删除指定的文档，包括从文档块存储、实体存储、事实存储
+        和知识图谱中删除相关数据。注意：如果三元组和实体来自未被删除的其他文档块，
+        它们不会被删除。
+        This method removes specified documents from the index, including from chunk storage,
+        entity storage, fact storage, and knowledge graph. Note: triples and entities from
+        chunks not being removed will not be deleted.
 
-        Parameters:
-            docs : List[str]
-                A list of documents to be deleted.
+        参数 / Parameters:
+            docs_to_delete : List[str]
+                待删除的文档列表 / List of documents to be deleted
         """
 
-        #Making sure that all the necessary structures have been built.
+        # 确保所有必要的数据结构已构建 / Ensure all necessary structures have been built
         if not self.ready_to_retrieve:
             self.prepare_retrieval_objects()
 
+        # 获取当前所有文档并过滤出实际存在的待删除文档 / Get all current docs and filter for actually existing docs to delete
         current_docs = set(self.chunk_embedding_store.get_all_texts())
         docs_to_delete = [doc for doc in docs_to_delete if doc in current_docs]
 
-        #Get ids for chunks to delete
+        # 获取待删除文档块的 ID / Get IDs for chunks to delete
         chunk_ids_to_delete = set(
             [self.chunk_embedding_store.text_to_hash_id[chunk] for chunk in docs_to_delete])
 
-        #Find triples in chunks to delete
+        # 查找待删除块中的三元组 / Find triples in chunks to delete
         all_openie_info, chunk_keys_to_process = self.load_existing_openie([])
         triples_to_delete = []
 
@@ -365,59 +492,80 @@ class HippoRAG:
                  num_to_retrieve: int = None,
                  gold_docs: List[List[str]] = None) -> List[QuerySolution] | Tuple[List[QuerySolution], Dict]:
         """
-        Performs retrieval using the HippoRAG 2 framework, which consists of several steps:
-        - Fact Retrieval
-        - Recognition Memory for improved fact selection
-        - Dense passage scoring
-        - Personalized PageRank based re-ranking
+        使用 HippoRAG 2 框架执行检索操作
+        Performs retrieval using the HippoRAG 2 framework
+        
+        该方法实现了 HippoRAG 2 框架的检索功能，包含以下步骤：
+        This method implements the retrieval functionality of HippoRAG 2 framework, including:
+        - 事实检索（Fact Retrieval）- Fact Retrieval
+        - 识别记忆以改进事实选择（Recognition Memory for improved fact selection）- Recognition Memory
+        - 密集段落评分（Dense passage scoring）- Dense passage scoring
+        - 基于个性化 PageRank 的重排序（Personalized PageRank based re-ranking）- PPR-based re-ranking
 
-        Parameters:
+        参数 / Parameters:
             queries: List[str]
-                A list of query strings for which documents are to be retrieved.
+                待检索的查询字符串列表 / List of query strings for retrieval
             num_to_retrieve: int, optional
-                The maximum number of documents to retrieve for each query. If not specified, defaults to
-                the `retrieval_top_k` value defined in the global configuration.
+                每个查询要检索的最大文档数。如果未指定，默认使用全局配置中的 `retrieval_top_k` 值。
+                Maximum number of documents to retrieve per query. Defaults to `retrieval_top_k` if not specified.
             gold_docs: List[List[str]], optional
-                A list of lists containing gold-standard documents corresponding to each query. Required
-                if retrieval performance evaluation is enabled (`do_eval_retrieval` in global configuration).
+                每个查询对应的黄金标准文档列表。如果启用了检索性能评估，则必须提供。
+                Gold-standard documents for each query. Required if retrieval evaluation is enabled.
 
-        Returns:
+        返回值 / Returns:
             List[QuerySolution] or (List[QuerySolution], Dict)
-                If retrieval performance evaluation is not enabled, returns a list of QuerySolution objects, each containing
-                the retrieved documents and their scores for the corresponding query. If evaluation is enabled, also returns
-                a dictionary containing the evaluation metrics computed over the retrieved results.
+                如果未启用检索评估，返回 QuerySolution 对象列表，每个对象包含对应查询的检索文档和分数。
+                如果启用评估，还会返回包含评估指标的字典。
+                Returns list of QuerySolution objects with retrieved docs and scores. If evaluation enabled,
+                also returns dictionary with evaluation metrics.
 
-        Notes
+        注意事项 / Notes
         -----
-        - Long queries with no relevant facts after reranking will default to results from dense passage retrieval.
+        - 对于重排序后没有相关事实的长查询，将默认使用密集段落检索的结果。
+        - Long queries with no relevant facts after reranking will default to dense passage retrieval results.
         """
-        retrieve_start_time = time.time()  # Record start time
+        # 记录开始时间 / Record start time
+        retrieve_start_time = time.time()
 
+        # 如果未指定检索数量，使用配置中的默认值 / Use default from config if num_to_retrieve not specified
         if num_to_retrieve is None:
             num_to_retrieve = self.global_config.retrieval_top_k
 
+        # 如果提供了黄金标准文档，初始化检索召回评估器 / Initialize retrieval recall evaluator if gold docs provided
         if gold_docs is not None:
             retrieval_recall_evaluator = RetrievalRecall(global_config=self.global_config)
 
+        # 如果系统尚未准备好检索，先准备检索对象 / Prepare retrieval objects if system not ready
         if not self.ready_to_retrieve:
             self.prepare_retrieval_objects()
 
+        # 获取查询的嵌入向量 / Get embeddings for queries
         self.get_query_embeddings(queries)
 
+        # 初始化检索结果列表 / Initialize retrieval results list
         retrieval_results = []
 
+        # 对每个查询执行检索 / Perform retrieval for each query
         for q_idx, query in tqdm(enumerate(queries), desc="Retrieving", total=len(queries)):
+            # 记录重排序开始时间 / Record reranking start time
             rerank_start = time.time()
+            # 获取查询的事实分数 / Get fact scores for query
             query_fact_scores = self.get_fact_scores(query)
+            # 重排序事实，选择最相关的 top-k 事实 / Rerank facts and select top-k most relevant ones
             top_k_fact_indices, top_k_facts, rerank_log = self.rerank_facts(query, query_fact_scores)
+            # 记录重排序结束时间 / Record reranking end time
             rerank_end = time.time()
 
+            # 累计重排序时间 / Accumulate reranking time
             self.rerank_time += rerank_end - rerank_start
 
+            # 如果重排序后没有找到相关事实 / If no relevant facts found after reranking
             if len(top_k_facts) == 0:
-                logger.info('No facts found after reranking, return DPR results')
+                logger.info('No facts found after reranking, return DPR results')  # 返回密集段落检索结果
+                # 使用密集段落检索（DPR）作为后备方案 / Use Dense Passage Retrieval (DPR) as fallback
                 sorted_doc_ids, sorted_doc_scores = self.dense_passage_retrieval(query)
             else:
+                # 使用事实实体进行图搜索 / Perform graph search with fact entities
                 sorted_doc_ids, sorted_doc_scores = self.graph_search_with_fact_entities(query=query,
                                                                                          link_top_k=self.global_config.linking_top_k,
                                                                                          query_fact_scores=query_fact_scores,
@@ -425,25 +573,33 @@ class HippoRAG:
                                                                                          top_k_fact_indices=top_k_fact_indices,
                                                                                          passage_node_weight=self.global_config.passage_node_weight)
 
+            # 根据排序的文档 ID 获取 top-k 文档内容 / Get top-k document content based on sorted doc IDs
             top_k_docs = [self.chunk_embedding_store.get_row(self.passage_node_keys[idx])["content"] for idx in sorted_doc_ids[:num_to_retrieve]]
 
+            # 将查询结果添加到结果列表 / Add query result to results list
             retrieval_results.append(QuerySolution(question=query, docs=top_k_docs, doc_scores=sorted_doc_scores[:num_to_retrieve]))
 
-        retrieve_end_time = time.time()  # Record end time
+        # 记录结束时间 / Record end time
+        retrieve_end_time = time.time()
 
+        # 累计总检索时间 / Accumulate total retrieval time
         self.all_retrieval_time += retrieve_end_time - retrieve_start_time
 
-        logger.info(f"Total Retrieval Time {self.all_retrieval_time:.2f}s")
-        logger.info(f"Total Recognition Memory Time {self.rerank_time:.2f}s")
-        logger.info(f"Total PPR Time {self.ppr_time:.2f}s")
-        logger.info(f"Total Misc Time {self.all_retrieval_time - (self.rerank_time + self.ppr_time):.2f}s")
+        # 记录各阶段的时间统计 / Log timing statistics for each stage
+        logger.info(f"Total Retrieval Time {self.all_retrieval_time:.2f}s")  # 总检索时间
+        logger.info(f"Total Recognition Memory Time {self.rerank_time:.2f}s")  # 识别记忆时间
+        logger.info(f"Total PPR Time {self.ppr_time:.2f}s")  # PPR 时间
+        logger.info(f"Total Misc Time {self.all_retrieval_time - (self.rerank_time + self.ppr_time):.2f}s")  # 其他时间
 
-        # Evaluate retrieval
+        # 评估检索结果 / Evaluate retrieval results
         if gold_docs is not None:
+            # 定义评估的 k 值列表 / Define k values for evaluation
             k_list = [1, 2, 5, 10, 20, 30, 50, 100, 150, 200]
+            # 计算检索指标（召回率@k）/ Calculate retrieval metrics (Recall@k)
             overall_retrieval_result, example_retrieval_results = retrieval_recall_evaluator.calculate_metric_scores(gold_docs=gold_docs, retrieved_docs=[retrieval_result.docs for retrieval_result in retrieval_results], k_list=k_list)
             logger.info(f"Evaluation results for retrieval: {overall_retrieval_result}")
 
+            # 返回检索结果和评估结果 / Return retrieval results and evaluation results
             return retrieval_results, overall_retrieval_result
         else:
             return retrieval_results
@@ -453,70 +609,81 @@ class HippoRAG:
                gold_docs: List[List[str]] = None,
                gold_answers: List[List[str]] = None) -> Tuple[List[QuerySolution], List[str], List[Dict]] | Tuple[List[QuerySolution], List[str], List[Dict], Dict, Dict]:
         """
-        Performs retrieval-augmented generation enhanced QA using the HippoRAG 2 framework.
+        使用 HippoRAG 2 框架执行检索增强生成问答
+        Performs retrieval-augmented generation enhanced QA using the HippoRAG 2 framework
+        
+        该方法可以处理基于字符串的查询和预处理的 QuerySolution 对象。根据输入，
+        它可以仅返回答案，或额外使用召回率@k、精确匹配和 F1 分数指标评估检索和答案质量。
+        This method handles both string queries and pre-processed QuerySolution objects. Depending
+        on inputs, it returns answers only or additionally evaluates retrieval and answer quality using
+        recall@k, exact match and F1 score metrics.
 
-        This method can handle both string-based queries and pre-processed QuerySolution objects. Depending
-        on its inputs, it returns answers only or additionally evaluate retrieval and answer quality using
-        recall @ k, exact match and F1 score metrics.
+        参数 / Parameters:
+            queries (List[Union[str, QuerySolution]]): 查询列表，可以是字符串或 QuerySolution 实例。
+                如果是字符串，将执行检索操作。
+                List of queries (strings or QuerySolution instances). Retrieval performed if strings.
+            gold_docs (Optional[List[List[str]]]): 每个查询的黄金标准文档列表。用于文档级评估。默认为 None。
+                Gold-standard documents for each query. Used for document-level evaluation. Default is None.
+            gold_answers (Optional[List[List[str]]]): 每个查询的黄金标准答案列表。启用 QA 评估时必须提供。默认为 None。
+                Gold-standard answers for each query. Required if QA evaluation enabled. Default is None.
 
-        Parameters:
-            queries (List[Union[str, QuerySolution]]): A list of queries, which can be either strings or
-                QuerySolution instances. If they are strings, retrieval will be performed.
-            gold_docs (Optional[List[List[str]]]): A list of lists containing gold-standard documents for
-                each query. This is used if document-level evaluation is to be performed. Default is None.
-            gold_answers (Optional[List[List[str]]]): A list of lists containing gold-standard answers for
-                each query. Required if evaluation of question answering (QA) answers is enabled. Default
-                is None.
-
-        Returns:
+        返回值 / Returns:
             Union[
                 Tuple[List[QuerySolution], List[str], List[Dict]],
                 Tuple[List[QuerySolution], List[str], List[Dict], Dict, Dict]
-            ]: A tuple that always includes:
-                - List of QuerySolution objects containing answers and metadata for each query.
-                - List of response messages for the provided queries.
-                - List of metadata dictionaries for each query.
-                If evaluation is enabled, the tuple also includes:
-                - A dictionary with overall results from the retrieval phase (if applicable).
-                - A dictionary with overall QA evaluation metrics (exact match and F1 scores).
+            ]: 始终包含以下内容的元组：
+               Always includes tuple with:
+                - QuerySolution 对象列表，包含每个查询的答案和元数据 / List of QuerySolution objects with answers and metadata
+                - 查询的响应消息列表 / List of response messages for queries
+                - 每个查询的元数据字典列表 / List of metadata dictionaries per query
+                如果启用评估，元组还包括：
+                If evaluation enabled, tuple also includes:
+                - 检索阶段的总体结果字典（如果适用）/ Dictionary with overall retrieval phase results (if applicable)
+                - QA 评估指标字典（精确匹配和 F1 分数）/ Dictionary with QA evaluation metrics (exact match and F1 scores)
 
         """
+        # 如果提供了黄金标准答案，初始化 QA 评估器 / Initialize QA evaluators if gold answers provided
         if gold_answers is not None:
-            qa_em_evaluator = QAExactMatch(global_config=self.global_config)
-            qa_f1_evaluator = QAF1Score(global_config=self.global_config)
+            qa_em_evaluator = QAExactMatch(global_config=self.global_config)  # 精确匹配评估器 / Exact match evaluator
+            qa_f1_evaluator = QAF1Score(global_config=self.global_config)  # F1 分数评估器 / F1 score evaluator
 
-        # Retrieving (if necessary)
+        # 检索（如果需要）/ Retrieving (if necessary)
         overall_retrieval_result = None
 
+        # 如果查询是字符串而不是 QuerySolution 对象，需要先执行检索 / If queries are strings not QuerySolution, perform retrieval first
         if not isinstance(queries[0], QuerySolution):
             if gold_docs is not None:
+                # 执行检索并评估 / Perform retrieval with evaluation
                 queries, overall_retrieval_result = self.retrieve(queries=queries, gold_docs=gold_docs)
             else:
+                # 仅执行检索 / Perform retrieval only
                 queries = self.retrieve(queries=queries)
 
-        # Performing QA
+        # 执行问答 / Performing QA
         queries_solutions, all_response_message, all_metadata = self.qa(queries)
 
-        # Evaluating QA
+        # 评估问答结果 / Evaluating QA
         if gold_answers is not None:
+            # 计算精确匹配（EM）分数 / Calculate Exact Match (EM) score
             overall_qa_em_result, example_qa_em_results = qa_em_evaluator.calculate_metric_scores(
                 gold_answers=gold_answers, predicted_answers=[qa_result.answer for qa_result in queries_solutions],
                 aggregation_fn=np.max)
+            # 计算 F1 分数 / Calculate F1 score
             overall_qa_f1_result, example_qa_f1_results = qa_f1_evaluator.calculate_metric_scores(
                 gold_answers=gold_answers, predicted_answers=[qa_result.answer for qa_result in queries_solutions],
                 aggregation_fn=np.max)
 
-            # round off to 4 decimal places for QA results
+            # 将 QA 结果四舍五入到 4 位小数 / Round QA results to 4 decimal places
             overall_qa_em_result.update(overall_qa_f1_result)
             overall_qa_results = overall_qa_em_result
             overall_qa_results = {k: round(float(v), 4) for k, v in overall_qa_results.items()}
             logger.info(f"Evaluation results for QA: {overall_qa_results}")
 
-            # Save retrieval and QA results
+            # 保存检索和 QA 结果 / Save retrieval and QA results
             for idx, q in enumerate(queries_solutions):
-                q.gold_answers = list(gold_answers[idx])
+                q.gold_answers = list(gold_answers[idx])  # 保存黄金标准答案 / Save gold answers
                 if gold_docs is not None:
-                    q.gold_docs = gold_docs[idx]
+                    q.gold_docs = gold_docs[idx]  # 保存黄金标准文档 / Save gold docs
 
             return queries_solutions, all_response_message, all_metadata, overall_retrieval_result, overall_qa_results
         else:
