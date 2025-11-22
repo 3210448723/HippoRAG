@@ -492,59 +492,80 @@ class HippoRAG:
                  num_to_retrieve: int = None,
                  gold_docs: List[List[str]] = None) -> List[QuerySolution] | Tuple[List[QuerySolution], Dict]:
         """
-        Performs retrieval using the HippoRAG 2 framework, which consists of several steps:
-        - Fact Retrieval
-        - Recognition Memory for improved fact selection
-        - Dense passage scoring
-        - Personalized PageRank based re-ranking
+        使用 HippoRAG 2 框架执行检索操作
+        Performs retrieval using the HippoRAG 2 framework
+        
+        该方法实现了 HippoRAG 2 框架的检索功能，包含以下步骤：
+        This method implements the retrieval functionality of HippoRAG 2 framework, including:
+        - 事实检索（Fact Retrieval）- Fact Retrieval
+        - 识别记忆以改进事实选择（Recognition Memory for improved fact selection）- Recognition Memory
+        - 密集段落评分（Dense passage scoring）- Dense passage scoring
+        - 基于个性化 PageRank 的重排序（Personalized PageRank based re-ranking）- PPR-based re-ranking
 
-        Parameters:
+        参数 / Parameters:
             queries: List[str]
-                A list of query strings for which documents are to be retrieved.
+                待检索的查询字符串列表 / List of query strings for retrieval
             num_to_retrieve: int, optional
-                The maximum number of documents to retrieve for each query. If not specified, defaults to
-                the `retrieval_top_k` value defined in the global configuration.
+                每个查询要检索的最大文档数。如果未指定，默认使用全局配置中的 `retrieval_top_k` 值。
+                Maximum number of documents to retrieve per query. Defaults to `retrieval_top_k` if not specified.
             gold_docs: List[List[str]], optional
-                A list of lists containing gold-standard documents corresponding to each query. Required
-                if retrieval performance evaluation is enabled (`do_eval_retrieval` in global configuration).
+                每个查询对应的黄金标准文档列表。如果启用了检索性能评估，则必须提供。
+                Gold-standard documents for each query. Required if retrieval evaluation is enabled.
 
-        Returns:
+        返回值 / Returns:
             List[QuerySolution] or (List[QuerySolution], Dict)
-                If retrieval performance evaluation is not enabled, returns a list of QuerySolution objects, each containing
-                the retrieved documents and their scores for the corresponding query. If evaluation is enabled, also returns
-                a dictionary containing the evaluation metrics computed over the retrieved results.
+                如果未启用检索评估，返回 QuerySolution 对象列表，每个对象包含对应查询的检索文档和分数。
+                如果启用评估，还会返回包含评估指标的字典。
+                Returns list of QuerySolution objects with retrieved docs and scores. If evaluation enabled,
+                also returns dictionary with evaluation metrics.
 
-        Notes
+        注意事项 / Notes
         -----
-        - Long queries with no relevant facts after reranking will default to results from dense passage retrieval.
+        - 对于重排序后没有相关事实的长查询，将默认使用密集段落检索的结果。
+        - Long queries with no relevant facts after reranking will default to dense passage retrieval results.
         """
-        retrieve_start_time = time.time()  # Record start time
+        # 记录开始时间 / Record start time
+        retrieve_start_time = time.time()
 
+        # 如果未指定检索数量，使用配置中的默认值 / Use default from config if num_to_retrieve not specified
         if num_to_retrieve is None:
             num_to_retrieve = self.global_config.retrieval_top_k
 
+        # 如果提供了黄金标准文档，初始化检索召回评估器 / Initialize retrieval recall evaluator if gold docs provided
         if gold_docs is not None:
             retrieval_recall_evaluator = RetrievalRecall(global_config=self.global_config)
 
+        # 如果系统尚未准备好检索，先准备检索对象 / Prepare retrieval objects if system not ready
         if not self.ready_to_retrieve:
             self.prepare_retrieval_objects()
 
+        # 获取查询的嵌入向量 / Get embeddings for queries
         self.get_query_embeddings(queries)
 
+        # 初始化检索结果列表 / Initialize retrieval results list
         retrieval_results = []
 
+        # 对每个查询执行检索 / Perform retrieval for each query
         for q_idx, query in tqdm(enumerate(queries), desc="Retrieving", total=len(queries)):
+            # 记录重排序开始时间 / Record reranking start time
             rerank_start = time.time()
+            # 获取查询的事实分数 / Get fact scores for query
             query_fact_scores = self.get_fact_scores(query)
+            # 重排序事实，选择最相关的 top-k 事实 / Rerank facts and select top-k most relevant ones
             top_k_fact_indices, top_k_facts, rerank_log = self.rerank_facts(query, query_fact_scores)
+            # 记录重排序结束时间 / Record reranking end time
             rerank_end = time.time()
 
+            # 累计重排序时间 / Accumulate reranking time
             self.rerank_time += rerank_end - rerank_start
 
+            # 如果重排序后没有找到相关事实 / If no relevant facts found after reranking
             if len(top_k_facts) == 0:
-                logger.info('No facts found after reranking, return DPR results')
+                logger.info('No facts found after reranking, return DPR results')  # 返回密集段落检索结果
+                # 使用密集段落检索（DPR）作为后备方案 / Use Dense Passage Retrieval (DPR) as fallback
                 sorted_doc_ids, sorted_doc_scores = self.dense_passage_retrieval(query)
             else:
+                # 使用事实实体进行图搜索 / Perform graph search with fact entities
                 sorted_doc_ids, sorted_doc_scores = self.graph_search_with_fact_entities(query=query,
                                                                                          link_top_k=self.global_config.linking_top_k,
                                                                                          query_fact_scores=query_fact_scores,
@@ -552,25 +573,33 @@ class HippoRAG:
                                                                                          top_k_fact_indices=top_k_fact_indices,
                                                                                          passage_node_weight=self.global_config.passage_node_weight)
 
+            # 根据排序的文档 ID 获取 top-k 文档内容 / Get top-k document content based on sorted doc IDs
             top_k_docs = [self.chunk_embedding_store.get_row(self.passage_node_keys[idx])["content"] for idx in sorted_doc_ids[:num_to_retrieve]]
 
+            # 将查询结果添加到结果列表 / Add query result to results list
             retrieval_results.append(QuerySolution(question=query, docs=top_k_docs, doc_scores=sorted_doc_scores[:num_to_retrieve]))
 
-        retrieve_end_time = time.time()  # Record end time
+        # 记录结束时间 / Record end time
+        retrieve_end_time = time.time()
 
+        # 累计总检索时间 / Accumulate total retrieval time
         self.all_retrieval_time += retrieve_end_time - retrieve_start_time
 
-        logger.info(f"Total Retrieval Time {self.all_retrieval_time:.2f}s")
-        logger.info(f"Total Recognition Memory Time {self.rerank_time:.2f}s")
-        logger.info(f"Total PPR Time {self.ppr_time:.2f}s")
-        logger.info(f"Total Misc Time {self.all_retrieval_time - (self.rerank_time + self.ppr_time):.2f}s")
+        # 记录各阶段的时间统计 / Log timing statistics for each stage
+        logger.info(f"Total Retrieval Time {self.all_retrieval_time:.2f}s")  # 总检索时间
+        logger.info(f"Total Recognition Memory Time {self.rerank_time:.2f}s")  # 识别记忆时间
+        logger.info(f"Total PPR Time {self.ppr_time:.2f}s")  # PPR 时间
+        logger.info(f"Total Misc Time {self.all_retrieval_time - (self.rerank_time + self.ppr_time):.2f}s")  # 其他时间
 
-        # Evaluate retrieval
+        # 评估检索结果 / Evaluate retrieval results
         if gold_docs is not None:
+            # 定义评估的 k 值列表 / Define k values for evaluation
             k_list = [1, 2, 5, 10, 20, 30, 50, 100, 150, 200]
+            # 计算检索指标（召回率@k）/ Calculate retrieval metrics (Recall@k)
             overall_retrieval_result, example_retrieval_results = retrieval_recall_evaluator.calculate_metric_scores(gold_docs=gold_docs, retrieved_docs=[retrieval_result.docs for retrieval_result in retrieval_results], k_list=k_list)
             logger.info(f"Evaluation results for retrieval: {overall_retrieval_result}")
 
+            # 返回检索结果和评估结果 / Return retrieval results and evaluation results
             return retrieval_results, overall_retrieval_result
         else:
             return retrieval_results
@@ -580,70 +609,81 @@ class HippoRAG:
                gold_docs: List[List[str]] = None,
                gold_answers: List[List[str]] = None) -> Tuple[List[QuerySolution], List[str], List[Dict]] | Tuple[List[QuerySolution], List[str], List[Dict], Dict, Dict]:
         """
-        Performs retrieval-augmented generation enhanced QA using the HippoRAG 2 framework.
+        使用 HippoRAG 2 框架执行检索增强生成问答
+        Performs retrieval-augmented generation enhanced QA using the HippoRAG 2 framework
+        
+        该方法可以处理基于字符串的查询和预处理的 QuerySolution 对象。根据输入，
+        它可以仅返回答案，或额外使用召回率@k、精确匹配和 F1 分数指标评估检索和答案质量。
+        This method handles both string queries and pre-processed QuerySolution objects. Depending
+        on inputs, it returns answers only or additionally evaluates retrieval and answer quality using
+        recall@k, exact match and F1 score metrics.
 
-        This method can handle both string-based queries and pre-processed QuerySolution objects. Depending
-        on its inputs, it returns answers only or additionally evaluate retrieval and answer quality using
-        recall @ k, exact match and F1 score metrics.
+        参数 / Parameters:
+            queries (List[Union[str, QuerySolution]]): 查询列表，可以是字符串或 QuerySolution 实例。
+                如果是字符串，将执行检索操作。
+                List of queries (strings or QuerySolution instances). Retrieval performed if strings.
+            gold_docs (Optional[List[List[str]]]): 每个查询的黄金标准文档列表。用于文档级评估。默认为 None。
+                Gold-standard documents for each query. Used for document-level evaluation. Default is None.
+            gold_answers (Optional[List[List[str]]]): 每个查询的黄金标准答案列表。启用 QA 评估时必须提供。默认为 None。
+                Gold-standard answers for each query. Required if QA evaluation enabled. Default is None.
 
-        Parameters:
-            queries (List[Union[str, QuerySolution]]): A list of queries, which can be either strings or
-                QuerySolution instances. If they are strings, retrieval will be performed.
-            gold_docs (Optional[List[List[str]]]): A list of lists containing gold-standard documents for
-                each query. This is used if document-level evaluation is to be performed. Default is None.
-            gold_answers (Optional[List[List[str]]]): A list of lists containing gold-standard answers for
-                each query. Required if evaluation of question answering (QA) answers is enabled. Default
-                is None.
-
-        Returns:
+        返回值 / Returns:
             Union[
                 Tuple[List[QuerySolution], List[str], List[Dict]],
                 Tuple[List[QuerySolution], List[str], List[Dict], Dict, Dict]
-            ]: A tuple that always includes:
-                - List of QuerySolution objects containing answers and metadata for each query.
-                - List of response messages for the provided queries.
-                - List of metadata dictionaries for each query.
-                If evaluation is enabled, the tuple also includes:
-                - A dictionary with overall results from the retrieval phase (if applicable).
-                - A dictionary with overall QA evaluation metrics (exact match and F1 scores).
+            ]: 始终包含以下内容的元组：
+               Always includes tuple with:
+                - QuerySolution 对象列表，包含每个查询的答案和元数据 / List of QuerySolution objects with answers and metadata
+                - 查询的响应消息列表 / List of response messages for queries
+                - 每个查询的元数据字典列表 / List of metadata dictionaries per query
+                如果启用评估，元组还包括：
+                If evaluation enabled, tuple also includes:
+                - 检索阶段的总体结果字典（如果适用）/ Dictionary with overall retrieval phase results (if applicable)
+                - QA 评估指标字典（精确匹配和 F1 分数）/ Dictionary with QA evaluation metrics (exact match and F1 scores)
 
         """
+        # 如果提供了黄金标准答案，初始化 QA 评估器 / Initialize QA evaluators if gold answers provided
         if gold_answers is not None:
-            qa_em_evaluator = QAExactMatch(global_config=self.global_config)
-            qa_f1_evaluator = QAF1Score(global_config=self.global_config)
+            qa_em_evaluator = QAExactMatch(global_config=self.global_config)  # 精确匹配评估器 / Exact match evaluator
+            qa_f1_evaluator = QAF1Score(global_config=self.global_config)  # F1 分数评估器 / F1 score evaluator
 
-        # Retrieving (if necessary)
+        # 检索（如果需要）/ Retrieving (if necessary)
         overall_retrieval_result = None
 
+        # 如果查询是字符串而不是 QuerySolution 对象，需要先执行检索 / If queries are strings not QuerySolution, perform retrieval first
         if not isinstance(queries[0], QuerySolution):
             if gold_docs is not None:
+                # 执行检索并评估 / Perform retrieval with evaluation
                 queries, overall_retrieval_result = self.retrieve(queries=queries, gold_docs=gold_docs)
             else:
+                # 仅执行检索 / Perform retrieval only
                 queries = self.retrieve(queries=queries)
 
-        # Performing QA
+        # 执行问答 / Performing QA
         queries_solutions, all_response_message, all_metadata = self.qa(queries)
 
-        # Evaluating QA
+        # 评估问答结果 / Evaluating QA
         if gold_answers is not None:
+            # 计算精确匹配（EM）分数 / Calculate Exact Match (EM) score
             overall_qa_em_result, example_qa_em_results = qa_em_evaluator.calculate_metric_scores(
                 gold_answers=gold_answers, predicted_answers=[qa_result.answer for qa_result in queries_solutions],
                 aggregation_fn=np.max)
+            # 计算 F1 分数 / Calculate F1 score
             overall_qa_f1_result, example_qa_f1_results = qa_f1_evaluator.calculate_metric_scores(
                 gold_answers=gold_answers, predicted_answers=[qa_result.answer for qa_result in queries_solutions],
                 aggregation_fn=np.max)
 
-            # round off to 4 decimal places for QA results
+            # 将 QA 结果四舍五入到 4 位小数 / Round QA results to 4 decimal places
             overall_qa_em_result.update(overall_qa_f1_result)
             overall_qa_results = overall_qa_em_result
             overall_qa_results = {k: round(float(v), 4) for k, v in overall_qa_results.items()}
             logger.info(f"Evaluation results for QA: {overall_qa_results}")
 
-            # Save retrieval and QA results
+            # 保存检索和 QA 结果 / Save retrieval and QA results
             for idx, q in enumerate(queries_solutions):
-                q.gold_answers = list(gold_answers[idx])
+                q.gold_answers = list(gold_answers[idx])  # 保存黄金标准答案 / Save gold answers
                 if gold_docs is not None:
-                    q.gold_docs = gold_docs[idx]
+                    q.gold_docs = gold_docs[idx]  # 保存黄金标准文档 / Save gold docs
 
             return queries_solutions, all_response_message, all_metadata, overall_retrieval_result, overall_qa_results
         else:
